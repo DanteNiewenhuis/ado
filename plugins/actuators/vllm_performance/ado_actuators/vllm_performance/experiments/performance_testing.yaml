@@ -277,7 +277,7 @@ test-endpoint-v1:
         description: "The dataset to use for the benchmark"
       propertyDomain:
         variableType: 'CATEGORICAL_VARIABLE_TYPE'
-        values: ['random']
+        values: ['sharegpt', 'burstgpt', 'sonnet', 'random', 'random-mm', 'random-rerank', 'hf', 'custom', 'custom_mm', 'prefix_repetition', 'spec_bench']
   defaultParameterization:
     - value: 1000
       property:
