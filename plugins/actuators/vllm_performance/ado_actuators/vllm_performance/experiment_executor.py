@@ -528,6 +528,148 @@ def run_resource_and_workload_experiment(
     # Push the request to the state updates queue
     state_update_queue.put(request, block=False)
 
+def is_model_loaded(model_name, base_url="http://localhost:8000"):
+    import requests
+
+    
+    try:
+        r = requests.get(f"{base_url}/v1/models", timeout=2)
+        r.raise_for_status()
+        models = r.json().get("data", [])
+        return any(m["id"] == model_name for m in models)
+    except requests.RequestException:
+        return False
+    
+def _serve_vLLM(hf_token: str | None = None,):
+    """
+    This function serves vLLM with the given configuration.
+    This is used for the test-deployment-baremetal-v1 experiment where we want to test the performance of vLLM
+    on a baremetal machine without doing any kubernetes deployment. This is useful to isolate the performance of vLLM
+    from the performance of the kubernetes deployment.
+
+    The function will:
+    1. Check if vLLM is already running with the given configuration. If it is, it will return the URL of the vLLM server.
+    2. Serve vLLM with the given configuration if it is not already running, and return the URL of the vLLM server.
+
+    """
+    
+    import os
+    import vllm
+    
+    if is_model_loaded("Qwen/Qwen3-0.6B"):
+        logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
+        return True
+    
+    env = dict(os.environ)
+    env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
+
+    if hf_token is not None:
+        env["HF_TOKEN"] = hf_token
+    
+    command = ["vllm", "serve", "Qwen/Qwen3-0.6B", "--host", "0.0.0.0", "--port", "8000"]
+    subprocess.check_call(command, env=env)
+    
+    # llm = vllm.LLM(
+    #     model="Qwen/Qwen3-0.6B",
+    #     tensor_parallel_size=1,   # adjust for multi-GPU
+    # )
+    
+    if is_model_loaded("Qwen/Qwen3-0.6B"):
+        logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
+        return True
+    
+    return False
+        
+    
+@ray.remote
+def run_serve_and_workload_experiment(
+    request: MeasurementRequest,
+    experiment: Experiment | ParameterizedExperiment,
+    state_update_queue: MeasurementQueue,
+    actuator_parameters: VLLMPerformanceTestParameters,
+) -> None:
+    """
+    Runs an experiment with a specific inference workload configuration on a given endpoint.
+
+    The compute resource associated with the end-point is not known.
+
+    :param request: measurement request
+    :param experiment: definition of experiment
+    :param state_update_queue: update queue
+    :param actuator_parameters: actuator parameters
+    :return:
+    """
+
+    # This function
+    # 1. Performs the measurement represented by MeasurementRequest
+    # 2. Updates MeasurementRequest with the results of the measurement and status
+    # 3. Puts it in the stateUpdateQueue
+
+    # placeholder for measurements
+    measurements = []
+    # For every entity
+    for entity in request.entities:
+        measured_values = []
+        error = None
+        try:
+            values = experiment.propertyValuesFromEntity(entity=entity)
+            logger.debug(
+                f"Values for entity {entity.identifier} and experiment {experiment.identifier} "
+                f"experiment type is {type(experiment)} are {json.dumps(values)}"
+            )
+
+            benchmark_parameters = BenchmarkParameters.model_validate(values)
+            
+            is_served = _serve_vLLM(hf_token=actuator_parameters.hf_token)
+            if not is_served:
+                raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")
+
+            # Will raise VLLMBenchmarkError if there is a problem
+            logger.info(f"Executing experiment: {experiment.identifier}")
+            result: BenchmarkResult
+            logger.info("Starting baremetal machine")
+            logger.info("Using vLLM random benchmark for endpoint")
+            result = execute_random_benchmark(
+                base_url=benchmark_parameters.endpoint,
+                model=benchmark_parameters.model,
+                interpreter=actuator_parameters.interpreter,
+                num_prompts=benchmark_parameters.num_prompts,
+                request_rate=benchmark_parameters.request_rate,
+                max_concurrency=benchmark_parameters.max_concurrency,
+                hf_token=actuator_parameters.hf_token,
+                benchmark_retries=actuator_parameters.benchmark_retries,
+                retries_timeout=actuator_parameters.retries_timeout,
+                number_input_tokens=benchmark_parameters.number_input_tokens,
+                max_output_tokens=benchmark_parameters.max_output_tokens,
+                burstiness=benchmark_parameters.burstiness,
+                dataset=benchmark_parameters.dataset,
+            )
+        except VLLMBenchmarkError as e:
+            error = f"Encountered benchmark error when testing entity {entity.identifier}: {e}"
+            logger.error(error)
+        except Exception as e:
+            error = f"Unexpected error for entity {entity.identifier}: {e}"
+            logger.error(error)
+        else:
+            measured_values = result.to_observed_property_values(experiment=experiment)
+            logger.debug(f"measured values {measured_values}")
+        finally:
+            measurements.append(
+                create_measurement_result(
+                    identifier=entity.identifier,
+                    measurements=measured_values,
+                    error=error,
+                    reference=request.experimentReference,
+                )
+            )
+
+    # For multi entity experiments if ONE entity had ValidResults the status must be SUCCESS
+    if len(measurements) > 0:
+        request.measurements = measurements
+    request.status = compute_measurement_status(measurements=measurements)
+    logger.debug(f"request status is {request.status}. pushing to update queue")
+    # Push the request to the state updates queue
+    state_update_queue.put(request, block=False)
 
 @ray.remote
 def run_workload_experiment(

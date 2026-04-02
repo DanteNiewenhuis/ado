@@ -17,6 +17,7 @@ from ado_actuators.vllm_performance.env_manager import (
 from ado_actuators.vllm_performance.experiment_executor import (
     run_resource_and_workload_experiment,
     run_workload_experiment,
+    run_serve_and_workload_experiment,
 )
 
 from orchestrator.core.actuatorconfiguration.config import GenericActuatorParameters
@@ -245,6 +246,18 @@ class VLLMPerformanceTest(ActuatorBase):
                 local_port=self.local_port,
             )
             self.local_port += len(request.entities)
+        elif experiment.identifier in [
+            "test-deployment-baremetal-v1",
+        ]:
+            logger.info(
+                f"Experiment ({experiment.identifier}) - Running serve and workload experiment on baremetal environment"
+            )
+            run_serve_and_workload_experiment.options(**ray_options).remote(
+                request=request,
+                experiment=experiment,
+                state_update_queue=self._stateUpdateQueue,
+                actuator_parameters=self.actuator_parameters,
+            )
         else:
             run_workload_experiment.options(**ray_options).remote(
                 request=request,

@@ -666,3 +666,127 @@ test-endpoint-guidellm-v1:
     - identifier: "p99_e2el_ms"
   metadata:
     description: 'Test inference performance of a model served by vLLM endpoint using GuideLLM benchmark suite across inference workload configurations'
+
+test-deployment-baremetal-v1:
+  identifier: test-deployment-baremetal-v1
+  actuatorIdentifier: "vllm_performance"
+  requiredProperties: # Any entity passed to this experiment must have constitutive properties with these values
+    - identifier: 'model'
+      metadata:
+        description: 'model to use for testing. Assumed to be served by all endpoints tested. Required to obtain correct tokenizer for benchmarking metrics calculation'
+      propertyDomain:
+        variableType: "OPEN_CATEGORICAL_VARIABLE_TYPE"
+        values: ["meta-llama/Llama-3.1-8B-Instruct", "ibm-granite/granite-3.3-8b-instruct", "openai/gpt-oss-20b"]
+    - identifier: 'endpoint'
+      metadata:
+        description: 'The endpoint(s) to test'
+      propertyDomain:
+        variableType: "OPEN_CATEGORICAL_VARIABLE_TYPE"
+        values: ["http://localhost:8000"]
+    - identifier: 'request_rate'
+      metadata:
+        description: "The number of requests to send per second"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [-1, 1000]
+        interval: 1 # -1 means send all requests at time 0
+  optionalProperties:
+    - identifier: 'num_prompts'
+      metadata:
+        description: "The number of prompts to send (total number of requests)"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 10001]
+        interval: 1
+    - identifier: 'number_input_tokens'
+      metadata:
+        description: "The number of input tokens to send per request"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 128000]
+        interval: 1 # -1 means send all requests at time 0
+    - identifier: 'max_output_tokens'
+      metadata:
+        description: "The maximum number of output tokens to generate per request"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 10000]
+        interval: 1 # -1 means send all requests at time 0
+    - identifier: 'burstiness'
+      metadata:
+        description: "The burstiness of the requests - 1.0 is a Poisson distribution with rate = request_rate. Others are gamma distributions with lambda = request_rate and shape = burstiness."
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [0, 10]
+        interval: 1
+    - identifier: 'max_concurrency'
+      metadata:
+        description: "The maximum number of concurrent requests to send"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [-1, 500] # -1 means no concurrency control
+        interval: 1
+    - identifier: 'dataset'
+      metadata:
+        description: "The dataset to use for the benchmark"
+      propertyDomain:
+        variableType: 'CATEGORICAL_VARIABLE_TYPE'
+        values: ['random']
+  defaultParameterization:
+    - value: 1000
+      property:
+        identifier: 'num_prompts'
+    - value: -1
+      property:
+        identifier: 'max_concurrency'
+    - value: 1.0
+      property:
+        identifier: 'burstiness'
+    - value: 1024
+      property:
+        identifier: 'number_input_tokens'
+    - value: 128
+      property:
+        identifier: 'max_output_tokens'
+    - value: 'random'
+      property:
+        identifier: "dataset"
+  # measurements
+  targetProperties:
+    - identifier: "duration"
+    - identifier: "completed"
+    - identifier: "total_input_tokens"
+    - identifier: "total_output_tokens"
+    - identifier: "request_throughput"
+    - identifier: "output_throughput"
+    - identifier: "total_token_throughput"
+    - identifier: "mean_ttft_ms"
+    - identifier: "median_ttft_ms"
+    - identifier: "std_ttft_ms"
+    - identifier: "p25_ttft_ms"
+    - identifier: "p50_ttft_ms"
+    - identifier: "p75_ttft_ms"
+    - identifier: "p99_ttft_ms"
+    - identifier: "mean_tpot_ms"
+    - identifier: "median_tpot_ms"
+    - identifier: "std_tpot_ms"
+    - identifier: "p25_tpot_ms"
+    - identifier: "p50_tpot_ms"
+    - identifier: "p75_tpot_ms"
+    - identifier: "p99_tpot_ms"
+    - identifier: "mean_itl_ms"
+    - identifier: "median_itl_ms"
+    - identifier: "std_itl_ms"
+    - identifier: "p25_itl_ms"
+    - identifier: "p50_itl_ms"
+    - identifier: "p75_itl_ms"
+    - identifier: "p99_itl_ms"
+    - identifier: "mean_e2el_ms"
+    - identifier: "median_e2el_ms"
+    - identifier: "std_e2el_ms"
+    - identifier: "p25_e2el_ms"
+    - identifier: "p50_e2el_ms"
+    - identifier: "p75_e2el_ms"
+    - identifier: "p99_e2el_ms"
+  metadata:
+    description: 'Test inference performance of a model served by vLLM endpoint across inference workload configurations'
