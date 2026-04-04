@@ -528,16 +528,20 @@ def run_resource_and_workload_experiment(
     # Push the request to the state updates queue
     state_update_queue.put(request, block=False)
 
-def is_model_loaded(model_name, base_url="http://localhost:8000"):
+def _is_model_loaded(model_name, base_url="http://localhost:8000"):
     import requests
 
+    logger.debug(
+        f"Requesting {base_url}/v1/models to check if model {model_name} is loaded in vLLM server"
+    )
     
     try:
         r = requests.get(f"{base_url}/v1/models", timeout=2)
         r.raise_for_status()
         models = r.json().get("data", [])
         return any(m["id"] == model_name for m in models)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Error checking if model is loaded: {e}")
         return False
     
 def _serve_vLLM(hf_token: str | None = None,):
@@ -556,27 +560,58 @@ def _serve_vLLM(hf_token: str | None = None,):
     import os
     import vllm
     
-    if is_model_loaded("Qwen/Qwen3-0.6B"):
+    logger.debug(
+            f"Serving vLLM with hf_token {hf_token} and checking if model is already loaded before serving"
+        )
+    
+    env = os.environ.copy()
+    
+    logger.debug(
+        f"Current environment variables: {json.dumps({k: env[k] for k in env})}"
+    )
+    env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
+    
+    # subprocess.Popen("module load 2025", env=env, shell=True)
+    # subprocess.Popen("module load CUDA/12.8.0", env=env, shell=True)
+    
+    subprocess.Popen(["nvidia-smi"], env=env, shell=True)
+    subprocess.Popen(["echo", "$CUDA_VISIBLE_DEVICES"], env=env, shell=True)
+    subprocess.Popen(["python", "-c", "import torch; print(torch.cuda.device_count())"], env=env, shell=True)
+    
+    logger.debug(
+        f"Tried running Popen to check GPU availability and CUDA_VISIBLE_DEVICES."
+    )
+    
+    if _is_model_loaded("Qwen/Qwen3-0.6B"):
         logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
         return True
     
-    env = dict(os.environ)
-    env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
+    logger.debug(
+        f"Starting new vLLM server process with the given configuration since model is not loaded yet"
+    )
 
     if hf_token is not None:
         env["HF_TOKEN"] = hf_token
     
     command = ["vllm", "serve", "Qwen/Qwen3-0.6B", "--host", "0.0.0.0", "--port", "8000"]
-    subprocess.check_call(command, env=env)
+    subprocess.Popen(command, env=env)
     
     # llm = vllm.LLM(
     #     model="Qwen/Qwen3-0.6B",
     #     tensor_parallel_size=1,   # adjust for multi-GPU
     # )
     
-    if is_model_loaded("Qwen/Qwen3-0.6B"):
+    logger.debug(
+        f"Started the loading of the LLM"
+    )
+    
+    if _is_model_loaded("Qwen/Qwen3-0.6B"):
         logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
         return True
+    
+    logger.debug(
+        f"Unable to start model Qwen/Qwen3-0.6B on vLLM server. This will cause the benchmark to fail, please check the logs for more details."
+    )
     
     return False
         
@@ -599,6 +634,9 @@ def run_serve_and_workload_experiment(
     :param actuator_parameters: actuator parameters
     :return:
     """
+    logger.debug(
+                f"entered run_serve_and_workload_experiment with request {request} and experiment {experiment}"
+            )
 
     # This function
     # 1. Performs the measurement represented by MeasurementRequest

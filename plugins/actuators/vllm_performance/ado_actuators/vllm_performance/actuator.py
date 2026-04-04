@@ -252,6 +252,18 @@ class VLLMPerformanceTest(ActuatorBase):
             logger.info(
                 f"Experiment ({experiment.identifier}) - Running serve and workload experiment on baremetal environment"
             )
+
+            ray_options["num_gpus"] = 1
+            ray_options["runtime_env"]["env_vars"] = {
+                    "CUDA_HOME": os.environ["CUDA_HOME"],
+                    "LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"],
+                    "PATH": os.environ["PATH"],
+                }
+            
+            logger.debug(
+                f"Starting experiment with options: {ray_options}"
+            )
+
             run_serve_and_workload_experiment.options(**ray_options).remote(
                 request=request,
                 experiment=experiment,
