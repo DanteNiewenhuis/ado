@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import subprocess
 import time
 import traceback
@@ -528,23 +529,25 @@ def run_resource_and_workload_experiment(
     # Push the request to the state updates queue
     state_update_queue.put(request, block=False)
 
-def _is_model_loaded(model_name, base_url="http://localhost:8000"):
+def _is_vllm_model_available(base_url, model_name):
+    # TODO: Also check if the model is the one we want, currently we just check if there is any model available
     import requests
-
-    logger.debug(
-        f"Requesting {base_url}/v1/models to check if model {model_name} is loaded in vLLM server"
-    )
+    
+    logger.debug(f"Checking if vLLM server is available at {base_url}...")
     
     try:
         r = requests.get(f"{base_url}/v1/models", timeout=2)
-        r.raise_for_status()
-        models = r.json().get("data", [])
-        return any(m["id"] == model_name for m in models)
-    except requests.RequestException as e:
-        logger.error(f"Error checking if model is loaded: {e}")
+        
+        if r.status_code == 200:
+            logger.debug("Server is ready!")
+            return True
+    except requests.RequestException:
+        logger.debug("Failed to connect to vLLM server.")
         return False
     
-def _serve_vLLM(hf_token: str | None = None,):
+    return False
+    
+def _serve_vLLM(model_name: str, base_url: str = "http://localhost:8000", hf_token: str | None = None):
     """
     This function serves vLLM with the given configuration.
     This is used for the test-deployment-baremetal-v1 experiment where we want to test the performance of vLLM
@@ -554,66 +557,51 @@ def _serve_vLLM(hf_token: str | None = None,):
     The function will:
     1. Check if vLLM is already running with the given configuration. If it is, it will return the URL of the vLLM server.
     2. Serve vLLM with the given configuration if it is not already running, and return the URL of the vLLM server.
-
     """
     
-    import os
-    import vllm
+    import requests
+    import uuid
     
-    logger.debug(
-            f"Serving vLLM with hf_token {hf_token} and checking if model is already loaded before serving"
-        )
+    print(f"Start loading the LLM")
     
-    env = os.environ.copy()
+    log_file_name = f"vllm_serve-{uuid.uuid4()}.log"
+    log_file = open(log_file_name, "w")
+
+    logger.debug(f"Starting vLLM server and logging to {log_file_name}...")
     
-    logger.debug(
-        f"Current environment variables: {json.dumps({k: env[k] for k in env})}"
-    )
+    env = dict(os.environ)
     env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
-    
-    # subprocess.Popen("module load 2025", env=env, shell=True)
-    # subprocess.Popen("module load CUDA/12.8.0", env=env, shell=True)
-    
-    subprocess.Popen(["nvidia-smi"], env=env, shell=True)
-    subprocess.Popen(["echo", "$CUDA_VISIBLE_DEVICES"], env=env, shell=True)
-    subprocess.Popen(["python", "-c", "import torch; print(torch.cuda.device_count())"], env=env, shell=True)
-    
-    logger.debug(
-        f"Tried running Popen to check GPU availability and CUDA_VISIBLE_DEVICES."
-    )
-    
-    if _is_model_loaded("Qwen/Qwen3-0.6B"):
-        logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
-        return True
-    
-    logger.debug(
-        f"Starting new vLLM server process with the given configuration since model is not loaded yet"
-    )
 
     if hf_token is not None:
         env["HF_TOKEN"] = hf_token
+
+    command = ["vllm", "serve", model_name, "--host", "0.0.0.0", "--port", "8000"]
+    proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT,)
+
+    logger.debug(f"Waiting for the server to be ready...")
+
+    success = False
+    while True:
+        try:
+            r = requests.get(f"{base_url}/v1/models", timeout=2)
+            
+            if r.status_code == 200:
+                logger.debug("Server is ready!")
+                success = True
+                break
+        except requests.RequestException:
+            logger.debug("Server is not ready yet...")
+            pass  # still not ready    
+        
+        poll = proc.poll()
+        logger.debug(f"process poll: {poll}")
+        
+        if poll is not None: # Check if the process is still running: None -> still running
+            logger.error(f"Serving vLLM crashed. Check logs: {log_file_name}")
     
-    command = ["vllm", "serve", "Qwen/Qwen3-0.6B", "--host", "0.0.0.0", "--port", "8000"]
-    subprocess.Popen(command, env=env)
+    log_file.close()
     
-    # llm = vllm.LLM(
-    #     model="Qwen/Qwen3-0.6B",
-    #     tensor_parallel_size=1,   # adjust for multi-GPU
-    # )
-    
-    logger.debug(
-        f"Started the loading of the LLM"
-    )
-    
-    if _is_model_loaded("Qwen/Qwen3-0.6B"):
-        logger.info("vLLM is already running with the model Qwen/Qwen3-0.6B, skipping serving step")
-        return True
-    
-    logger.debug(
-        f"Unable to start model Qwen/Qwen3-0.6B on vLLM server. This will cause the benchmark to fail, please check the logs for more details."
-    )
-    
-    return False
+    return success
         
     
 @ray.remote
@@ -658,9 +646,14 @@ def run_serve_and_workload_experiment(
 
             benchmark_parameters = BenchmarkParameters.model_validate(values)
             
-            is_served = _serve_vLLM(hf_token=actuator_parameters.hf_token)
-            if not is_served:
-                raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")
+            _is_available = _is_vllm_model_available(base_url=benchmark_parameters.endpoint, 
+                                                     model_name=benchmark_parameters.model)
+            if not _is_available:
+                is_served = _serve_vLLM(model_name=benchmark_parameters.model, 
+                                        base_url=benchmark_parameters.endpoint, 
+                                        hf_token=actuator_parameters.hf_token)
+                if not is_served:
+                    raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")
 
             # Will raise VLLMBenchmarkError if there is a problem
             logger.info(f"Executing experiment: {experiment.identifier}")
