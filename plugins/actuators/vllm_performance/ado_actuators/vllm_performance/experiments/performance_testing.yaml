@@ -671,6 +671,19 @@ test-deployment-baremetal-v1:
   identifier: test-deployment-baremetal-v1
   actuatorIdentifier: "vllm_performance"
   requiredProperties: # Any entity passed to this experiment must have constitutive properties with these values
+    - identifier: 'n_gpus'
+      metadata:
+        description: "(deployment) Number of GPUs to use"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 9]
+        interval: 1
+    - identifier: 'gpu_type'
+      metadata:
+        description: "(deployment) The GPU type to use"
+      propertyDomain:
+        variableType: "OPEN_CATEGORICAL_VARIABLE_TYPE"
+        values: ['NVIDIA-A100-80GB-PCIe', 'NVIDIA-A100-SXM4-80GB']
     - identifier: 'model'
       metadata:
         description: 'model to use for testing. Assumed to be served by all endpoints tested. Required to obtain correct tokenizer for benchmarking metrics calculation'
@@ -691,6 +704,34 @@ test-deployment-baremetal-v1:
         domainRange: [-1, 1000]
         interval: 1 # -1 means send all requests at time 0
   optionalProperties:
+    - identifier: 'tensor_parallel_size'
+      metadata:
+        description: "(deployment) Number of GPUs to use"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 9]
+        interval: 1
+    - identifier: 'max_model_len'
+      metadata:
+        description: "The total number of tokens (input + output) that a single request can use."
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [-1, 49152]
+        interval: 1
+    - identifier: 'max_num_batched_tokens'
+      metadata:
+        description: "The total number of tokens (input + output) across a batch"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [-1, 12582912]
+        interval: 1
+    - identifier: 'max_num_seqs'
+      metadata:
+        description: "The total number of requests in a batch"
+      propertyDomain:
+        variableType: 'DISCRETE_VARIABLE_TYPE'
+        domainRange: [1, 2048]
+        interval: 1
     - identifier: 'num_prompts'
       metadata:
         description: "The number of prompts to send (total number of requests)"
@@ -733,6 +774,18 @@ test-deployment-baremetal-v1:
         variableType: 'CATEGORICAL_VARIABLE_TYPE'
         values: ['random']
   defaultParameterization:
+    - value: 1
+      property:
+        identifier: 'tensor_parallel_size'
+    - value: -1
+      property:
+        identifier: 'max_model_len'
+    - value: -1
+      property:
+        identifier: 'max_num_batched_tokens'
+    - value: 256
+      property:
+        identifier: 'max_num_seqs'
     - value: 1000
       property:
         identifier: 'num_prompts'
@@ -753,6 +806,7 @@ test-deployment-baremetal-v1:
         identifier: "dataset"
   # measurements
   targetProperties:
+    - identifier: "date"
     - identifier: "duration"
     - identifier: "completed"
     - identifier: "total_input_tokens"

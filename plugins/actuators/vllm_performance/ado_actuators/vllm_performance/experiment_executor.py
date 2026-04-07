@@ -547,7 +547,13 @@ def _is_vllm_model_available(base_url, model_name):
     
     return False
     
-def _serve_vLLM(model_name: str, base_url: str = "http://localhost:8000", hf_token: str | None = None):
+def _serve_vLLM(model_name: str,
+                base_url: str = "http://localhost:8000",
+                tensor_parallel_size: int = 1,
+                max_model_len: int = -1,
+                max_num_batched_tokens: int = -1,
+                max_num_seqs: int = 256,
+                hf_token: str | None = None):
     """
     This function serves vLLM with the given configuration.
     This is used for the test-deployment-baremetal-v1 experiment where we want to test the performance of vLLM
@@ -575,7 +581,23 @@ def _serve_vLLM(model_name: str, base_url: str = "http://localhost:8000", hf_tok
     if hf_token is not None:
         env["HF_TOKEN"] = hf_token
 
-    command = ["vllm", "serve", model_name, "--host", "0.0.0.0", "--port", "8000"]
+    command = ["vllm", 
+               "serve", 
+               model_name, 
+                "--tensor-parallel-size",
+                str(tensor_parallel_size),
+                "--max-num-seqs",
+                str(max_num_seqs),
+               "--host", 
+               "0.0.0.0", 
+               "--port", 
+               "8000"]
+    
+    if max_model_len > 0:
+        command += ["--max-model-len", str(max_model_len)]
+    if max_num_batched_tokens > 0:
+        command += ["--max-num-batched-tokens", str(max_num_batched_tokens)]
+        
     proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT,)
 
     logger.debug(f"Waiting for the server to be ready...")
@@ -646,11 +668,17 @@ def run_serve_and_workload_experiment(
 
             benchmark_parameters = BenchmarkParameters.model_validate(values)
             
+            logger.debug(f"Benchmark parameters: {benchmark_parameters}")
+            
             _is_available = _is_vllm_model_available(base_url=benchmark_parameters.endpoint, 
                                                      model_name=benchmark_parameters.model)
             if not _is_available:
                 is_served = _serve_vLLM(model_name=benchmark_parameters.model, 
-                                        base_url=benchmark_parameters.endpoint, 
+                                        base_url=benchmark_parameters.endpoint,
+                                        tensor_parallel_size=benchmark_parameters.tensor_parallel_size,
+                                        max_model_len=benchmark_parameters.max_model_len,
+                                        max_num_batched_tokens=benchmark_parameters.max_num_batched_tokens,
+                                        max_num_seqs=benchmark_parameters.max_num_seqs, 
                                         hf_token=actuator_parameters.hf_token)
                 if not is_served:
                     raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")

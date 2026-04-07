@@ -28,7 +28,7 @@ def get_results(f_name: str = "random.json") -> BenchmarkResult:
         ) from e
 
     # Remove fields not needed for BenchmarkResult
-    del results["date"]
+    # del results["date"]
     del results["endpoint_type"]
     del results["tokenizer_id"]
     del results["label"]

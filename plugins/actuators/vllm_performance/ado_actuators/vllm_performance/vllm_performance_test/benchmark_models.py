@@ -25,6 +25,9 @@ def none_if_negative(value: int | None) -> int | None:
 class BenchmarkParameters(pydantic.BaseModel):
     """Model for common benchmark parameters extracted from experiment values."""
 
+    n_gpus: Annotated[int, pydantic.Field(gt=0)] = 1
+    gpu_type: Annotated[str, pydantic.Field()]
+    
     model: Annotated[str, pydantic.Field()]
     endpoint: Annotated[str | None, pydantic.Field()] = None
     request_rate: Annotated[
@@ -39,6 +42,12 @@ class BenchmarkParameters(pydantic.BaseModel):
     burstiness: Annotated[float, pydantic.Field()] = 1.0
     dataset: Annotated[str | None, pydantic.Field()] = "random"
 
+    tensor_parallel_size: Annotated[int, pydantic.Field()] = 1
+    max_model_len: Annotated[int, pydantic.Field()] = -1
+    max_num_batched_tokens: Annotated[int, pydantic.Field()] = -1
+    max_num_seqs: Annotated[int, pydantic.Field()] = 256
+
+
 
 class BenchmarkResult(pydantic.BaseModel):
     """
@@ -49,6 +58,7 @@ class BenchmarkResult(pydantic.BaseModel):
     """
 
     # Basic metrics
+    date: Annotated[str, pydantic.Field()] = ""
     duration: Annotated[float, pydantic.Field()] = 0.0
     completed: Annotated[int, pydantic.Field()] = 0
     total_input_tokens: Annotated[float, pydantic.Field()] = 0.0

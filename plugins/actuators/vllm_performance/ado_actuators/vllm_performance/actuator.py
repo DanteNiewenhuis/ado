@@ -250,10 +250,11 @@ class VLLMPerformanceTest(ActuatorBase):
             "test-deployment-baremetal-v1",
         ]:
             logger.info(
-                f"Experiment ({experiment.identifier}) - Running serve and workload experiment on baremetal environment"
+                f"Experiment ({experiment}) - Running serve and workload experiment on baremetal environment"
             )
 
-            ray_options["num_gpus"] = 1
+            # We assume all entities have the same number of gpus required so we can just look at the first one
+            ray_options["num_gpus"] = experiment.propertyValuesFromEntity(request.entities[0]).get("n_gpus")
             ray_options["runtime_env"]["env_vars"] = {
                     "CUDA_HOME": os.environ["CUDA_HOME"],
                     "LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"],
