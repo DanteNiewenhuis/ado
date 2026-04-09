@@ -13,8 +13,11 @@ from ado_actuators.vllm_performance.actuator_parameters import (
     VLLMPerformanceTestParameters,
 )
 from ado_actuators.vllm_performance.env_manager import (
-    Environment,
     EnvironmentManager,
+    BareMetalEnvironment,
+    BareMetalEnvironmentManager,
+    K8SEnvironment,
+    K8SEnvironmentManager,
     EnvironmentState,
 )
 from ado_actuators.vllm_performance.k8s import (
@@ -53,7 +56,7 @@ from orchestrator.utilities.support import (
 logger = logging.getLogger(__name__)
 
 
-def _build_entity_env(values: dict[str, str]) -> str:
+def _build_k8s_entity_env(values: dict[str, str]) -> str:
     """
     This is the list of entity parameters that define the environment:
         * model name
@@ -92,7 +95,7 @@ def _create_environment(
     actuator: VLLMPerformanceTestParameters,
     node_selector: dict[str, str],
     request_id: str,
-    env_manager: ActorHandle[EnvironmentManager],
+    env_manager: ActorHandle[K8SEnvironmentManager],
     check_interval: int = 5,
     timeout: int = 1200,
 ) -> tuple[str, str]:
@@ -129,7 +132,7 @@ def _create_environment(
     model = values.get("model")
 
     # create environment definition
-    definition = _build_entity_env(values=values)
+    definition = _build_k8s_entity_env(values=values)
     console.put.remote(
         message=RichConsoleSpinnerMessage(
             id=request_id,
@@ -139,7 +142,7 @@ def _create_environment(
     )
     while True:
         try:
-            env: Environment = ray.get(
+            env: K8SEnvironment = ray.get(
                 env_manager.get_environment.remote(model=model, definition=definition)
             )
         except Exception as e:
@@ -350,7 +353,7 @@ def run_resource_and_workload_experiment(
     state_update_queue: MeasurementQueue,
     actuator_parameters: VLLMPerformanceTestParameters,
     node_selector: dict[str, str],
-    env_manager: ActorHandle,
+    env_manager: ActorHandle[K8SEnvironmentManager],
     local_port: int,
 ) -> None:
     """
@@ -529,14 +532,17 @@ def run_resource_and_workload_experiment(
     # Push the request to the state updates queue
     state_update_queue.put(request, block=False)
 
-def _is_vllm_model_available(base_url, model_name):
+
+
+def _is_vllm_model_available(values: dict[str, str]) -> bool:
     # TODO: Also check if the model is the one we want, currently we just check if there is any model available
     import requests
     
-    logger.debug(f"Checking if vLLM server is available at {base_url}...")
+    
+    logger.debug(f"Checking if vLLM server is available at http://localhost:8000/v1/models')...")
     
     try:
-        r = requests.get(f"{base_url}/v1/models", timeout=2)
+        r = requests.get(f"http://localhost:8000/v1/models", timeout=(2,5))
         
         if r.status_code == 200:
             logger.debug("Server is ready!")
@@ -547,13 +553,10 @@ def _is_vllm_model_available(base_url, model_name):
     
     return False
     
-def _serve_vLLM(model_name: str,
-                base_url: str = "http://localhost:8000",
-                tensor_parallel_size: int = 1,
-                max_model_len: int = -1,
-                max_num_batched_tokens: int = -1,
-                max_num_seqs: int = 256,
-                hf_token: str | None = None):
+def _serve_vLLM(values: dict[str, str],
+                env_manager: ActorHandle[BareMetalEnvironmentManager],
+                check_interval: int = 5,
+                timeout: int = 1200) -> bool:
     """
     This function serves vLLM with the given configuration.
     This is used for the test-deployment-baremetal-v1 experiment where we want to test the performance of vLLM
@@ -568,44 +571,76 @@ def _serve_vLLM(model_name: str,
     import requests
     import uuid
     
-    print(f"Start loading the LLM")
+    logger.debug(f"Getting environment with the values: {values}")
     
-    log_file_name = f"vllm_serve-{uuid.uuid4()}.log"
+    model = values.get("model")
+    
+    while True:
+        try:
+            env: BareMetalEnvironment = ray.get(
+                env_manager.get_environment.remote(model=model, configuration=values)
+            )
+        except Exception as e:
+            raise e
+        if env is not None:
+            logging.debug(f"Got environment {env} for model {model} with configuration {values}")
+            break
+
+        # This is to guarantee that the request is next in line as soon as an environment is available
+        ray.get(env_manager.wait_for_env.remote())
+    
+    if _is_vllm_model_available(values):
+        # Extend the checking
+        logger.debug("vLLM server is already running with the given configuration.")
+        return True
+    
+    log_file_name = f"vllm_serve-{time.strftime("%Y-%m-%d_%H:%M:%S")}.log"
     log_file = open(log_file_name, "w")
 
     logger.debug(f"Starting vLLM server and logging to {log_file_name}...")
     
-    env = dict(os.environ)
-    env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
+    exec_env = dict(os.environ)
+    exec_env["VLLM_BENCH_LOGLEVEL"] = logging.getLevelName(logger.getEffectiveLevel())
 
-    if hf_token is not None:
-        env["HF_TOKEN"] = hf_token
+    if values.get("hf_token") is not None:
+        exec_env["HF_TOKEN"] = values.get("hf_token")
 
     command = ["vllm", 
                "serve", 
-               model_name, 
+               values.get("model"), 
                 "--tensor-parallel-size",
-                str(tensor_parallel_size),
+                str(values.get("tensor_parallel_size")),
                 "--max-num-seqs",
-                str(max_num_seqs),
+                str(values.get("max_num_seqs")),
                "--host", 
                "0.0.0.0", 
                "--port", 
                "8000"]
     
-    if max_model_len > 0:
-        command += ["--max-model-len", str(max_model_len)]
-    if max_num_batched_tokens > 0:
-        command += ["--max-num-batched-tokens", str(max_num_batched_tokens)]
+    if values.get("max_model_len") > 0:
+        command += ["--max-model-len", str(values.get("max_model_len"))]
+    if values.get("max_num_batched_tokens") > 0:
+        command += ["--max-num-batched-tokens", str(values.get("max_num_batched_tokens"))]
         
-    proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT,)
+    logger.debug(f"Starting a vllm server with command: {' '.join(command)}")
+        
+    proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT, env=exec_env)
+
+    # Set environment variable with the process id so that it can be killed at cleanup    
+    logger.debug(f"Setting pid for environment {env}: {proc.pid}")
+    
+    ray.get(
+        env_manager.set_pid.remote(values, proc.pid)
+    )
 
     logger.debug(f"Waiting for the server to be ready...")
 
     success = False
     while True:
         try:
-            r = requests.get(f"{base_url}/v1/models", timeout=2)
+            r = requests.get(f"http://localhost:8000/v1/models", timeout=(2,5))
+            
+            logger.debug(f"Received response from server: {r}")
             
             if r.status_code == 200:
                 logger.debug("Server is ready!")
@@ -620,10 +655,14 @@ def _serve_vLLM(model_name: str,
         
         if poll is not None: # Check if the process is still running: None -> still running
             logger.error(f"Serving vLLM crashed. Check logs: {log_file_name}")
+            
+            return False
+            
+        time.sleep(1) # wait a second before retrying, so we don't spam the server with requests and give it some time to start up
     
     log_file.close()
     
-    return success
+    return env is not None
         
     
 @ray.remote
@@ -632,6 +671,7 @@ def run_serve_and_workload_experiment(
     experiment: Experiment | ParameterizedExperiment,
     state_update_queue: MeasurementQueue,
     actuator_parameters: VLLMPerformanceTestParameters,
+    env_manager: ActorHandle[BareMetalEnvironmentManager],
 ) -> None:
     """
     Runs an experiment with a specific inference workload configuration on a given endpoint.
@@ -645,7 +685,7 @@ def run_serve_and_workload_experiment(
     :return:
     """
     logger.debug(
-                f"entered run_serve_and_workload_experiment with request {request} and experiment {experiment}"
+                f"Starting run_serve_and_workload_experiment with request {request} and experiment {experiment}"
             )
 
     # This function
@@ -670,18 +710,12 @@ def run_serve_and_workload_experiment(
             
             logger.debug(f"Benchmark parameters: {benchmark_parameters}")
             
-            _is_available = _is_vllm_model_available(base_url=benchmark_parameters.endpoint, 
-                                                     model_name=benchmark_parameters.model)
-            if not _is_available:
-                is_served = _serve_vLLM(model_name=benchmark_parameters.model, 
-                                        base_url=benchmark_parameters.endpoint,
-                                        tensor_parallel_size=benchmark_parameters.tensor_parallel_size,
-                                        max_model_len=benchmark_parameters.max_model_len,
-                                        max_num_batched_tokens=benchmark_parameters.max_num_batched_tokens,
-                                        max_num_seqs=benchmark_parameters.max_num_seqs, 
-                                        hf_token=actuator_parameters.hf_token)
-                if not is_served:
-                    raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")
+            is_served = _serve_vLLM(values=values, 
+                                    env_manager=env_manager)
+            
+            if not is_served:
+                raise VLLMBenchmarkError("Failed to serve vLLM with the given configuration")
+               
 
             # Will raise VLLMBenchmarkError if there is a problem
             logger.info(f"Executing experiment: {experiment.identifier}")
@@ -703,6 +737,8 @@ def run_serve_and_workload_experiment(
                 burstiness=benchmark_parameters.burstiness,
                 dataset=benchmark_parameters.dataset,
             )
+            
+            logger.debug(f"Benchmark result: {result}")
         except VLLMBenchmarkError as e:
             error = f"Encountered benchmark error when testing entity {entity.identifier}: {e}"
             logger.error(error)
@@ -721,6 +757,9 @@ def run_serve_and_workload_experiment(
                     reference=request.experimentReference,
                 )
             )
+            
+            logger.debug(f"Cleaning up environment for entity {values}")
+            env_manager.done_using.remote(configuration=values)
 
     # For multi entity experiments if ONE entity had ValidResults the status must be SUCCESS
     if len(measurements) > 0:

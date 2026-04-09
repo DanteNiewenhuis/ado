@@ -79,6 +79,13 @@ class VLLMPerformanceTestParameters(GenericActuatorParameters):
             description="If true, disables automatic installation of vllm and guidellm dependencies in Ray task environment. Useful for development when dependencies are already installed."
         ),
     ] = False
+    baremetal: Annotated[
+        bool,
+        pydantic.Field(
+            description="If true, This assumes vllm models are deployed in a bare metal setting."
+        ),
+    ] = False
+    
 
     @pydantic.model_validator(mode="before")
     @classmethod

@@ -12,7 +12,9 @@ from ado_actuators.vllm_performance.actuator_parameters import (
     VLLMPerformanceTestParameters,
 )
 from ado_actuators.vllm_performance.env_manager import (
+    BareMetalEnvironmentManager,
     EnvironmentManager,
+    K8SEnvironmentManager,
 )
 from ado_actuators.vllm_performance.experiment_executor import (
     run_resource_and_workload_experiment,
@@ -105,11 +107,13 @@ class VLLMPerformanceTest(ActuatorBase):
         # Set parameters
         self.actuator_parameters = params
         # çreate environment manager actor
-        self.env_manager = None
+        self.env_manager: EnvironmentManager = None
+        
+        logger.debug(f"Actuator initialized with parameters: {params}")
 
         if self.actuator_parameters.namespace:
             try:
-                self.env_manager = EnvironmentManager.remote(
+                self.env_manager = K8SEnvironmentManager.remote(
                     namespace=params.namespace,
                     max_concurrent=params.max_environments,
                     in_cluster=params.in_cluster,
@@ -135,9 +139,34 @@ class VLLMPerformanceTest(ActuatorBase):
                     )
         else:
             self.log.warning(
-                "No namespace set in acutator configuration - will not be able to create deployments"
+                "No namespace set in acutator configuration - will not be able to create deployments using k8s"
             )
+        
+        if self.actuator_parameters.baremetal:
+            logger.warning(
+                "Baremetal mode enabled - make sure this actuator is running in the same environment where vLLM models are deployed"
+            )
+            try:
+                self.env_manager = BareMetalEnvironmentManager.remote()
+            except Exception as error:
+                self.log.warning(
+                    f"Unable to create baremetal environment manager due to {error}. "
+                    f"Will not be able to execute experiments requiring deploying on baremetal machine"
+                )
+            else:
+                # add to clean up
+                try:
+                    cleaner_handle = ray.get_actor(
+                        name=CLEANER_ACTOR, namespace=queue.ray_namespace()
+                    )
+                    cleaner_handle.add_to_cleanup.remote(handle=self.env_manager)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to register custom actors for clean up {e}. Make sure you clean it up"
+                    )
 
+        logger.debug(f"Environment manager set to {self.env_manager}")
+        
         # initialize local port
         self.local_port = 10000
 
@@ -249,17 +278,25 @@ class VLLMPerformanceTest(ActuatorBase):
         elif experiment.identifier in [
             "test-deployment-baremetal-v1",
         ]:
+            if not self.env_manager:
+                raise MissingConfigurationForExperimentError(
+                    f"Actuator configuration did not contain sufficient information for a baremetal environment manager to be created. "
+                    f"Experiment {experiment} requires a baremetal environment manager to be executable."
+                )
             logger.info(
                 f"Experiment ({experiment}) - Running serve and workload experiment on baremetal environment"
             )
 
             # We assume all entities have the same number of gpus required so we can just look at the first one
             ray_options["num_gpus"] = experiment.propertyValuesFromEntity(request.entities[0]).get("n_gpus")
-            ray_options["runtime_env"]["env_vars"] = {
+            ray_options["runtime_env"] = {
+                "py_executable": "/scratch-shared/dniewenhuis/IBM/.venv_IBM_experiments/bin/python",
+                "env_vars": {
                     "CUDA_HOME": os.environ["CUDA_HOME"],
                     "LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"],
                     "PATH": os.environ["PATH"],
                 }
+            }
             
             logger.debug(
                 f"Starting experiment with options: {ray_options}"
@@ -270,6 +307,7 @@ class VLLMPerformanceTest(ActuatorBase):
                 experiment=experiment,
                 state_update_queue=self._stateUpdateQueue,
                 actuator_parameters=self.actuator_parameters,
+                env_manager=self.env_manager,
             )
         else:
             run_workload_experiment.options(**ray_options).remote(
